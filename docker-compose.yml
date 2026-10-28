@@ -1,0 +1,55 @@
+# AgentOps 本地开发环境：MySQL 8.4 + Redis 7
+# 用法：
+#   docker compose up -d --wait   # 启动并等待健康检查通过
+#   docker compose ps             # 查看状态
+#   docker compose stop redis     # 模拟 Redis 宕机（测试缓存降级）
+#   docker compose down -v        # 停止并删除数据卷（数据库会清空！）
+
+services:
+  mysql:
+    # 钉死 8.4 LTS：mysql:8 这个 tag 会漂移（8.0 已于 2026-04 EOL），latest 更是大忌
+    image: mysql:8.4
+    container_name: agentops-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: agentops          # 首次初始化自动创建应用库
+      MYSQL_USER: agentops              # 应用使用的普通账号（最小权限）
+      MYSQL_PASSWORD: agentops123
+      TZ: UTC                           # 容器时区 UTC，与代码里 loc=UTC 一致
+    command:
+      - --character-set-server=utf8mb4          # 服务端默认字符集（utf8mb4 才是完整 UTF-8）
+      - --collation-server=utf8mb4_unicode_ci   # 默认排序规则
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 初始化脚本只在数据卷为空（首次启动）时执行一次；改脚本后要 docker compose down -v 才会重跑
+      - ./deploy/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # 必须 -h 127.0.0.1 走 TCP：初始化期间 mysqld 会以 skip-networking 跑临时实例，
+      # 只 ping socket 会误判"已就绪"
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot123456"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentops-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]   # AOF 持久化，重启不丢缓存
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mysql-data:
+  redis-data:
